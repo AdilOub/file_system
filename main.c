@@ -3,13 +3,31 @@
 #include <inttypes.h>
 
 #define FILENAME "hdd.bin"
+#define BLOCK_SIZE 128 //block size en bytes
+
+#define DISK_SIZE 0x1000000 //16MB
+
+uint64_t offset = 0;
 
 
-struct block{
-    uint64_t info;
-    uint64_t* indirection;
+struct inode{
+    uint64_t type;
+    uint64_t size;
+    uint64_t blockPointers[12];
+    uint64_t singleIndirectPointer;
+    uint64_t parent;
 };
-typedef struct block block;
+typedef struct inode inode;
+
+struct inode_descriptor{
+    uint64_t name_high;
+    uint64_t name_low;
+    uint64_t creation_time;
+    uint64_t modification_time;
+    uint64_t access_rights;
+    uint64_t inode_pointer;
+    uint64_t align[10]; //ulgy ass hack to make the struct 128 bytes :sob:
+};
 
 char* read(char* buffer, int size, int offset){
     FILE* file = fopen(FILENAME, "r");
@@ -17,11 +35,12 @@ char* read(char* buffer, int size, int offset){
         fprintf(stderr, "Error opening file in read\n");
         return NULL;
     }
-    fseek(file, 0, SEEK_SET);
+    fseek(file, offset, SEEK_SET);
     fread(buffer, size, 1, file);
     fclose(file);
     return buffer;
 }
+
 
 void write(char* buffer, int size, int offset) {
     FILE* file = fopen(FILENAME, "w");
@@ -29,80 +48,129 @@ void write(char* buffer, int size, int offset) {
         fprintf(stderr, "Error opening file in writie\n");
         return;
     }
-    fseek(file, 0, SEEK_SET);
+    fseek(file, offset, SEEK_SET);
     fwrite(buffer, size, 1, file);
     fclose(file);
     return;
 }
-uint64_t little_to_big_endian(uint64_t x){
-    return ((x & 0x00000000000000FF) << 56) | ((x & 0x000000000000FF00) << 40) | ((x & 0x0000000000FF0000) << 24) | ((x & 0x00000000FF000000) << 8) | ((x & 0x000000FF00000000) >> 8) | ((x & 0x0000FF0000000000) >> 24) | ((x & 0x00FF000000000000) >> 40) | ((x & 0xFF00000000000000) >> 56);
+
+inode* read_inode(uint64_t inode_address){
+    inode* node = (inode*)malloc(sizeof(inode));
+    char* buffer = (char*)malloc(sizeof(inode));
+    read(buffer, sizeof(inode), inode_address);
+    node = (inode*)buffer;
+    return node;
 }
 
-void read_block(block* block, int offset){
-    char buffer[512];
-    read(buffer, 512, offset);
-    block->info = little_to_big_endian(*(uint64_t*)buffer);
-    for (int i = 0; i < 7; i++) {
-        block->indirection[i] = little_to_big_endian(*(uint64_t*)(buffer + 8 + i * 8));
-    }
-    return;
-}
-
-int is_block_dir(block* block){
-    return (block->info & (1UL << 60))!=0; //attention on lit en little endian
-}
-
-uint64_t get_block_size(block* block){
-    return block->info & 0x00FFFFFFFFFFFFFF;
-}
-
-block* init_block(int type){
-    block* block = malloc(sizeof(block));
-    block->info = 0;
-    block->info |= (1UL << 60);
-    block->indirection = malloc(7 * sizeof(uint64_t));
-    for(int i = 0; i < 7; i++){
-        block->indirection[i] = 0;
-    }
-    return block;
-}
-
-//todo
-char* read_block_data(block* block){
-    if(is_block_dir(block)){
-        fprintf(stderr, "Error: block is not a data block\n");
-        return NULL;
-    }
-    uint64_t size = get_block_size(block);
-    char* data = malloc(size);
-
-}
-
-//todo
-char* read_block_indrection(block* block){
-    if(!is_block_dir(block)){
-        fprintf(stderr, "Error: block is not a directory block\n");
-        return NULL;
-    }
-    uint64_t size = get_block_size(block); //nombre d'indirection dans le block (max 7)
-    char* data = malloc(size * 8); //chaque data va contenir une addresse de block
-}
-
-void print_bin(uint64_t n){
-    for(int i = 63; i >= 0; i--){
-        printf("%ld", (n >> i) & 1);
+void print_inode(inode* node){
+    printf("Type: %lu\n", node->type);
+    printf("Size: %lu\n", node->size);
+    printf("Block Pointers: \n");
+    for (int i = 0; i < 12; i++){
+        printf("%d: %lu\n", i, node->blockPointers[i]);
     }
     printf("\n");
+    printf("Single Indirect Pointer: %lu\n", node->singleIndirectPointer);
+    printf("Parent: %lu\n", node->parent);
 }
 
-int main() {
-    block *racine = init_block(1);
-    read_block(racine, 0);
-    printf("Is_dir: %d\n", is_block_dir(racine));
-    printf("Size: %lu\n", get_block_size(racine));
-    printf("Indirection: %lu\n", racine->indirection[0]);
-    for(int i = 0; i < 7; i++){
-        printf("Indirection %d: %lu\n", i, racine->indirection[i]);
+//TODO return inode_descriptor** instead of inode**
+inode** read_dir(inode* dir){
+    if(dir->type != 1){
+        fprintf(stderr, "Not a directory\n");
+        return NULL;
     }
+
+    inode** nodes = (inode**)malloc(sizeof(inode*) * 12);
+    for (int i = 0; i < dir->size; i++){
+        nodes[i] = read_inode(dir->blockPointers[i]);
+    }
+    return nodes;
+}
+
+char* read_file(inode* file){
+    if(file->type != 2){
+        fprintf(stderr, "Not a file\n");
+        return NULL;
+    }
+
+    char* buffer = (char*)malloc(file->size);
+    for (int i = 0; i < file->size; i++){
+        char temp;
+        read(&temp, sizeof(char), file->blockPointers[i / BLOCK_SIZE] + i % BLOCK_SIZE);
+        buffer[i] = temp;
+    }
+    return buffer;
+}
+
+uint64_t find_free_inode_block(){
+    uint64_t address=0;
+    while(address<DISK_SIZE){
+        inode* node = read_inode(address);
+        if(node->type == 0){
+            return address;
+        }
+        address += sizeof(inode);
+    }
+    return -1;
+}
+
+uint64_t find_free_data_block(){
+    uint64_t address=DISK_SIZE/2; //on laisse de la place pour les inodes au début
+    while(address<DISK_SIZE){
+        inode* node = read_inode(address);
+        if(node->type == 0){
+            return address;
+        }
+        address += sizeof(inode);
+    }
+    return -1;
+}
+
+uint64_t write_inode(inode* node){
+    uint64_t address = find_free_inode_block();
+    printf("Free inode block at %lu\n", address);
+    if(address == -1){
+        fprintf(stderr, "No free inode block\n");
+        return -1;
+    }
+    write((char*)node, sizeof(inode), address);
+    return address;
+}
+
+int main(int argc, char* argv[]){
+    inode* racine = read_inode(0);
+    print_inode(racine);
+
+    printf("Reading directory\n");
+    inode** nodes = read_dir(racine);
+    for (int i = 0; i < racine->size; i++){
+        printf("Node %d\n\n\n", i);
+        print_inode(nodes[i]);
+    }
+
+    if(racine->size == 0){
+        printf("Racine vide\n");
+        return 0;
+    }
+    
+    inode* file = nodes[0];
+    printf("Reading file\n");
+    char* buffer = read_file(file);
+    printf("%s\n", buffer);
+
+    printf("Writing new file\n");
+    inode* new_file = (inode*)malloc(sizeof(inode));
+    new_file->type = 2;
+    new_file->size = 5;
+    new_file->blockPointers[0] = find_free_data_block();
+    write_inode(new_file);
+
+
+   
     return 0;
 }
+
+/*
+C'est une V1 très inéficace, par exemple pour modifier un fichier, on doit le lire, le supprimer, le réécrire avec les modifications, et le réécrire dans le répertoire
+*/
