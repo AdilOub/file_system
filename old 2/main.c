@@ -5,33 +5,29 @@
 #define FILENAME "hdd.bin"
 #define BLOCK_SIZE 128 //block size en bytes
 
-#define TABLE_SIZE 256 // nombre de bloc qu'on peut avoir
-
 #define DISK_SIZE 0x1000000 //16MB
-
-#define MAX_INODE_PER_DIR 12
 
 uint64_t offset = 0;
 
 
-
 struct inode{
-    char* name[128];
-    uint64_t* blockPointers;
+    uint64_t type;
+    uint64_t size;
+    uint64_t blockPointers[12];
+    uint64_t singleIndirectPointer;
+    uint64_t parent;
 };
 typedef struct inode inode;
 
-const int size_inode = 128*sizeof(char)*12 + sizeof(uint64_t*)*12;
-
-uint64_t* read_table(uint64_t address){
-    uint64_t* table = (uint64_t*)malloc(sizeof(uint64_t) * TABLE_SIZE);
-    char* buffer = (char*)malloc(sizeof(uint64_t) * TABLE_SIZE);
-    read(buffer, sizeof(uint64_t) * TABLE_SIZE, address);
-    table = (uint64_t*)buffer;
-    return table;
-}
-
-
+struct inode_descriptor{
+    uint64_t name_high;
+    uint64_t name_low;
+    uint64_t creation_time;
+    uint64_t modification_time;
+    uint64_t access_rights;
+    uint64_t inode_pointer;
+    uint64_t align[10]; //ulgy ass hack to make the struct 128 bytes :sob:
+};
 
 char* read(char* buffer, int size, int offset){
     FILE* file = fopen(FILENAME, "r");
@@ -141,7 +137,6 @@ uint64_t write_inode(inode* node){
     write((char*)node, sizeof(inode), address);
     return address;
 }
-
 
 int main(int argc, char* argv[]){
     inode* racine = read_inode(0);
