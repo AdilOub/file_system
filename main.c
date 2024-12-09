@@ -3,35 +3,33 @@
 #include <inttypes.h>
 
 #define FILENAME "hdd.bin"
-#define BLOCK_SIZE 128 //block size en bytes
 
-#define TABLE_SIZE 256 // nombre de bloc qu'on peut avoir
+#define FAT_TABLE_SIZE 128 // nombre de bloc qu'on peut avoir
 
-#define DISK_SIZE 0x1000000 //16MB
+#define DISK_SIZE 4096 //4KB
 
-#define MAX_INODE_PER_DIR 12
-
-uint64_t offset = 0;
+#define MAX_INODE_PER_DIR 4
 
 
+#define NAME_LENGTH 4
+
+#define FOLDER_SIGNATURE 0xDE
+#define FILE_SIGNATURE 0xF1
+
+uint64_t offset = FAT_TABLE_SIZE;
 
 struct inode{
-    char* name[128];
-    uint64_t* blockPointers;
+    char name[NAME_LENGTH][MAX_INODE_PER_DIR];
+    uint16_t starting_cluster[MAX_INODE_PER_DIR];
 };
 typedef struct inode inode;
 
-const int size_inode = 128*sizeof(char)*12 + sizeof(uint64_t*)*12;
+#define BLOCK_SIZE sizeof(inode)
 
-uint64_t* read_table(uint64_t address){
-    uint64_t* table = (uint64_t*)malloc(sizeof(uint64_t) * TABLE_SIZE);
-    char* buffer = (char*)malloc(sizeof(uint64_t) * TABLE_SIZE);
-    read(buffer, sizeof(uint64_t) * TABLE_SIZE, address);
-    table = (uint64_t*)buffer;
-    return table;
-}
-
-
+struct fat_entry{
+    uint16_t signature;
+};
+typedef struct fat_entry fat_entry;
 
 char* read(char* buffer, int size, int offset){
     FILE* file = fopen(FILENAME, "r");
@@ -58,124 +56,112 @@ void write(char* buffer, int size, int offset) {
     return;
 }
 
+fat_entry* read_fat_table(){
+    fat_entry* fat_table = (fat_entry*)malloc(FAT_TABLE_SIZE * sizeof(fat_entry));
+    char* buffer = (char*)malloc(FAT_TABLE_SIZE * sizeof(fat_entry));
+    read(buffer, FAT_TABLE_SIZE * sizeof(fat_entry), 0);
+    fat_table = (fat_entry*)buffer;
+    return fat_table;
+}
+
+void update_fat_table(uint16_t signature, uint16_t index){
+    fat_entry* fat_table = read_fat_table();
+    fat_table[index].signature = signature;
+    write((char*)fat_table, FAT_TABLE_SIZE * sizeof(fat_entry), 0);
+    free(fat_table);
+    return;
+}
+
+void print_fat_table(){
+    fat_entry* fat_table = read_fat_table();
+    for(int i = 0; i < FAT_TABLE_SIZE; i++){
+        printf("Index: %d, Signature: %d\n", i, fat_table[i].signature);
+    }
+    free(fat_table);
+    return;
+}
+
 inode* read_inode(uint64_t inode_address){
     inode* node = (inode*)malloc(sizeof(inode));
     char* buffer = (char*)malloc(sizeof(inode));
-    read(buffer, sizeof(inode), inode_address);
+    read(buffer, sizeof(inode), inode_address*sizeof(inode) + offset);
     node = (inode*)buffer;
     return node;
 }
 
+void write_inode(uint16_t inode_address, inode* node){
+    write((char*)node, sizeof(inode), inode_address * sizeof(inode) + offset);
+    return;
+}
+
+void write_data_to_inode(uint16_t inode_address, char* data){
+    printf("Writing data to inode %d, '%s'\n", inode_address, data);
+    //write(data, sizeof(inode), inode_address*sizeof(inode) + offset);
+    return;
+}
+
+int create_folder(char* name, uint16_t starting_cluster){
+    inode* node = read_inode(starting_cluster);
+    fat_entry* fat_table = read_fat_table();
+    int new_inode = -1;
+    for(int i = 0; i < MAX_INODE_PER_DIR; i++){
+        if(fat_table[i+starting_cluster].signature == 0){
+            new_inode = i;
+            for(int j = 0; j < NAME_LENGTH; j++){
+                node->name[i][j] = name[j];
+            }
+            node->starting_cluster[i] = starting_cluster;
+            write((char*)node, sizeof(inode), offset);
+            update_fat_table(FOLDER_SIGNATURE, new_inode);
+            free(node);
+            free(fat_table);
+            return new_inode;
+        }
+    }
+    fprintf(stderr, "No more space in the inode\n");
+    free(node);
+    free(fat_table);
+    return -1;
+}
+
+int create_file(char* name, uint16_t starting_cluster, char* data){
+    inode* node = read_inode(starting_cluster);
+    fat_entry* fat_table = read_fat_table();
+    int new_inode = -1;
+    for(int i = 0; i < MAX_INODE_PER_DIR; i++){
+        if(fat_table[i+starting_cluster].signature == 0){
+            printf("Find a free inode at %d in cluster %d\n", i+starting_cluster, starting_cluster);
+            new_inode = i;
+            for(int j = 0; j < NAME_LENGTH; j++){
+                node->name[i][j] = name[j];
+            }
+            node->starting_cluster[i] = starting_cluster;
+            write_inode(starting_cluster, node);
+            update_fat_table(FILE_SIGNATURE, new_inode);
+            write_data_to_inode(new_inode, data);
+            free(node);
+            free(fat_table);
+            return new_inode;
+        }
+    }
+    fprintf(stderr, "No more space in the inode\n");
+    free(node);
+    free(fat_table);
+    return -1;
+}
+
 void print_inode(inode* node){
-    printf("Type: %lu\n", node->type);
-    printf("Size: %lu\n", node->size);
-    printf("Block Pointers: \n");
-    for (int i = 0; i < 12; i++){
-        printf("%d: %lu\n", i, node->blockPointers[i]);
+    for(int i = 0; i < MAX_INODE_PER_DIR; i++){
+        printf("Name: %s\n", node->name[i]);
+        printf("Starting cluster: %d\n", node->starting_cluster[i]);
     }
-    printf("\n");
-    printf("Single Indirect Pointer: %lu\n", node->singleIndirectPointer);
-    printf("Parent: %lu\n", node->parent);
 }
 
-//TODO return inode_descriptor** instead of inode**
-inode** read_dir(inode* dir){
-    if(dir->type != 1){
-        fprintf(stderr, "Not a directory\n");
-        return NULL;
-    }
-
-    inode** nodes = (inode**)malloc(sizeof(inode*) * 12);
-    for (int i = 0; i < dir->size; i++){
-        nodes[i] = read_inode(dir->blockPointers[i]);
-    }
-    return nodes;
-}
-
-char* read_file(inode* file){
-    if(file->type != 2){
-        fprintf(stderr, "Not a file\n");
-        return NULL;
-    }
-
-    char* buffer = (char*)malloc(file->size);
-    for (int i = 0; i < file->size; i++){
-        char temp;
-        read(&temp, sizeof(char), file->blockPointers[i / BLOCK_SIZE] + i % BLOCK_SIZE);
-        buffer[i] = temp;
-    }
-    return buffer;
-}
-
-uint64_t find_free_inode_block(){
-    uint64_t address=0;
-    while(address<DISK_SIZE){
-        inode* node = read_inode(address);
-        if(node->type == 0){
-            return address;
-        }
-        address += sizeof(inode);
-    }
-    return -1;
-}
-
-uint64_t find_free_data_block(){
-    uint64_t address=DISK_SIZE/2; //on laisse de la place pour les inodes au début
-    while(address<DISK_SIZE){
-        inode* node = read_inode(address);
-        if(node->type == 0){
-            return address;
-        }
-        address += sizeof(inode);
-    }
-    return -1;
-}
-
-uint64_t write_inode(inode* node){
-    uint64_t address = find_free_inode_block();
-    printf("Free inode block at %lu\n", address);
-    if(address == -1){
-        fprintf(stderr, "No free inode block\n");
-        return -1;
-    }
-    write((char*)node, sizeof(inode), address);
-    return address;
-}
-
-
-int main(int argc, char* argv[]){
-    inode* racine = read_inode(0);
-    print_inode(racine);
-
-    printf("Reading directory\n");
-    inode** nodes = read_dir(racine);
-    for (int i = 0; i < racine->size; i++){
-        printf("Node %d\n\n\n", i);
-        print_inode(nodes[i]);
-    }
-
-    if(racine->size == 0){
-        printf("Racine vide\n");
-        return 0;
-    }
-    
-    inode* file = nodes[0];
-    printf("Reading file\n");
-    char* buffer = read_file(file);
-    printf("%s\n", buffer);
-
-    printf("Writing new file\n");
-    inode* new_file = (inode*)malloc(sizeof(inode));
-    new_file->type = 2;
-    new_file->size = 5;
-    new_file->blockPointers[0] = find_free_data_block();
-    write_inode(new_file);
-
-
-   
+int main(){
+    //create_folder(".", 0);
+    int new_inode_usr = create_folder("usr", 0);
+    printf("New inode for /usr/: %d\n", new_inode_usr);
+    int new_inode_file = create_file("file", new_inode_usr, "data");
+    printf("New inode for /file: %d\n", new_inode_file);
     return 0;
 }
-
-/*
-C'est une V1 très inéficace, par exemple pour modifier un fichier, on doit le lire, le supprimer, le réécrire avec les modifications, et le réécrire dans le répertoire
-*/
