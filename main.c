@@ -158,6 +158,7 @@ void print_inode(inode* node){
 }
 
 int main(){
+    printf("sizeof inode: %ld\n", sizeof(inode));
     //create_folder(".", 0);
     int new_inode_usr = create_folder("usr", 0);
     printf("New inode for /usr/: %d\n", new_inode_usr);
