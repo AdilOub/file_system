@@ -259,7 +259,7 @@ int main(){
     int t = create_folder_in_parent(0, "test");
     create_folder_in_parent(0, "bin");
     create_folder_in_parent(0, "usr");
-    create_folder_in_parent(t, "BITE");
+    create_folder_in_parent(t, "HIHI");
 
 
     char* data = malloc(BLOCK_SIZE*2);
@@ -286,3 +286,10 @@ int main(){
 
 //Seul cas ou parent NOT_USED: le dossier root
 //On écrit BAD_BLOCK pendant qu'on est en train de créer un fichier
+
+
+//TODO: supp de fichier/dossier (mettre à NOT_USED dans la fat table et enlever le lien dans le parent) 
+//TODO: renommer fichier/dossier (changer le nom dans le parent)
+//TODO: modifier fichier (supprimer les clusters et en recréer des nouveaux)
+
+//TODO: lire un fichier en entier
